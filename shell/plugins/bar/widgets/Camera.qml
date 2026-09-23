@@ -1,47 +1,21 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
-import Quickshell.Services.Pipewire
 import qs.Ui
 
 BarWidget {
   id: root
   moduleName: "omarchy.camera"
 
-  readonly property var nodes: Pipewire.nodes ? Pipewire.nodes.values : []
-
-  function isVideoSource(node) {
-    if (!node || node.isStream) return false
-    var kind = String(node.type || "")
-    return kind.indexOf("VideoSource") !== -1 || kind.indexOf("Video/Source") !== -1
-  }
-
-  readonly property bool pipewireCamera: {
-    for (var i = 0; i < root.nodes.length; i++) {
-      if (root.isVideoSource(root.nodes[i])) return true
-    }
-    return false
-  }
-
-  // "absent", "idle", or "busy". The probe covers apps that open /dev/video*
-  // directly; PipeWire only labels the camera device, not the capture stream.
+  // "absent", "idle", or "busy". The probe is the only presence signal:
+  // Quickshell's Video/Source flag also matches a screen-share producer.
   property string cameraState: "absent"
-  readonly property bool present: pipewireCamera || cameraState !== "absent"
+  readonly property bool present: cameraState !== "absent"
   readonly property bool inUse: cameraState === "busy"
 
   visible: present
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
-
-  PwObjectTracker {
-    objects: {
-      var list = []
-      for (var i = 0; i < root.nodes.length; i++) {
-        if (root.isVideoSource(root.nodes[i])) list.push(root.nodes[i])
-      }
-      return list
-    }
-  }
 
   function probePath() {
     var path = Qt.resolvedUrl("camera-busy.sh").toString()
