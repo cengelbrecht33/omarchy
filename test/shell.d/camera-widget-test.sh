@@ -47,18 +47,57 @@ for arg in "\$@"; do
 done
 exit 1
 EOF
-chmod +x "$bin/timeout" "$bin/pw-dump" "$bin/fuser"
+cat >"$bin/systemctl" <<EOF
+#!/bin/bash
+printf 'systemctl %s\n' "\$*" >>"$log"
+[[ \$1 == is-active && \$2 == --quiet ]] || exit 1
+unit=\${3#v4l2-relayd@}
+unit=\${unit%.service}
+grep -qxF -- "\$unit" "$tmp/active-relays" && exit 0
+exit 1
+EOF
+chmod +x "$bin/timeout" "$bin/pw-dump" "$bin/fuser" "$bin/systemctl"
+
+relay_dir="$tmp/relays"
+sysfs_root="$tmp/sys/video4linux"
+
+clear_relays() {
+  rm -rf "$relay_dir" "$sysfs_root"
+  mkdir -p "$relay_dir" "$sysfs_root"
+  : >"$tmp/active-relays"
+}
+clear_relays
+
+# instance.conf plus, when device is set, a virtual video4linux name file.
+add_relay() {
+  local instance=$1
+  local label=$2
+  local device=${3:-}
+  local video_name
+
+  printf 'CARD_LABEL="%s"\n' "$label" >"$relay_dir/$instance.conf"
+  printf '%s\n' "$instance" >>"$tmp/active-relays"
+  if [[ -n $device ]]; then
+    video_name=${device#/dev/}
+    mkdir -p "$sysfs_root/$video_name"
+    printf '%s\n' "$label" >"$sysfs_root/$video_name/name"
+  fi
+}
 
 # fixture: pw-dump body. mode: ok, fail, or hang.
 # open_devices: comma-separated nodes the fuser stub reports open.
 # fallback: __unset__ leaves CAMERA_BUSY_DEVICES unset; any other value,
 # including empty, is passed through and stands in for the device glob.
+# PROBE_KEEP_RELAYS=1 keeps a relay set up before this call.
 probe() {
   local fixture=$1
   local mode=${2:-ok}
   local open_devices=${3:-}
   local fallback=${4-__unset__}
 
+  if [[ ${PROBE_KEEP_RELAYS:-} != 1 ]]; then
+    clear_relays
+  fi
   cp -- "$fixture" "$tmp/dump.json"
   printf '%s\n' "$mode" >"$tmp/pw-mode"
   if [[ -n $open_devices ]]; then
@@ -70,11 +109,15 @@ probe() {
 
   if [[ $fallback == __unset__ ]]; then
     env -u CAMERA_BUSY_DUMP -u CAMERA_BUSY_DEVICES -u CAMERA_BUSY_OPEN_DEVICES \
+      CAMERA_BUSY_RELAY_DIR="$relay_dir" \
+      CAMERA_BUSY_VIDEO_SYSFS="$sysfs_root" \
       PATH="$bin:$PATH" \
       bash "$script"
   else
     env -u CAMERA_BUSY_DUMP -u CAMERA_BUSY_OPEN_DEVICES \
       CAMERA_BUSY_DEVICES="$fallback" \
+      CAMERA_BUSY_RELAY_DIR="$relay_dir" \
+      CAMERA_BUSY_VIDEO_SYSFS="$sysfs_root" \
       PATH="$bin:$PATH" \
       bash "$script"
   fi
@@ -243,7 +286,40 @@ cat >"$tmp/loopback.json" <<'EOF'
   {
     "id": 70,
     "type": "PipeWire:Interface:Node",
-    "info": {"props": {"node.name": "v4l2loopback", "media.class": "Video/Sink", "device.api": "v4l2", "api.v4l2.path": "/dev/video2"}}
+    "info": {"props": {
+      "node.name": "v4l2_input.loopback",
+      "media.class": "Video/Source",
+      "device.api": "v4l2",
+      "api.v4l2.path": "/dev/video2",
+      "api.v4l2.cap.driver": "v4l2 loopback",
+      "api.v4l2.cap.card": "Cam Link 4K"
+    }}
+  }
+]
+EOF
+
+cat >"$tmp/loopback-linked.json" <<'EOF'
+[
+  {
+    "id": 70,
+    "type": "PipeWire:Interface:Node",
+    "info": {"props": {
+      "media.class": "Video/Source",
+      "device.api": "v4l2",
+      "api.v4l2.path": "/dev/video2",
+      "api.v4l2.cap.driver": "v4l2 loopback",
+      "api.v4l2.cap.card": "Cam Link 4K"
+    }}
+  },
+  {
+    "id": 71,
+    "type": "PipeWire:Interface:Node",
+    "info": {"props": {"media.class": "Stream/Input/Video", "node.name": "firefox"}}
+  },
+  {
+    "id": 72,
+    "type": "PipeWire:Interface:Link",
+    "info": {"output-node-id": 70, "input-node-id": 71, "state": "active"}
   }
 ]
 EOF
@@ -287,9 +363,44 @@ saw_pw "non-camera video node"
 no_fuser "non-camera video node"
 
 actual=$(probe "$tmp/loopback.json" ok "/dev/video2")
-expect "a leftover loopback node is absent" "$actual" "absent"
-saw_pw "leftover loopback"
-no_fuser "leftover loopback"
+expect "a loopback source left behind after unplug is absent" "$actual" "absent"
+saw_pw "unplugged loopback"
+no_fuser "unplugged loopback"
+
+add_relay camlink "Cam Link 4K" /dev/video2
+actual=$(PROBE_KEEP_RELAYS=1 probe "$tmp/loopback.json")
+expect "a loopback source counts while its relay is running" "$actual" "idle"
+saw_pw "relayed loopback"
+saw_fuser "relayed loopback" "fuser /dev/video2"
+clear_relays
+
+add_relay camlink "Cam Link 4K" /dev/video2
+actual=$(PROBE_KEEP_RELAYS=1 probe "$tmp/loopback-linked.json")
+expect "a link from a relayed loopback is busy" "$actual" "busy"
+saw_pw "linked relayed loopback"
+saw_fuser "linked relayed loopback" "fuser /dev/video2"
+clear_relays
+
+add_relay camlink "Cam Link 4K" /dev/video2
+actual=$(PROBE_KEEP_RELAYS=1 probe "$tmp/screencast.json" ok "/dev/video2")
+expect "a running relay counts when PipeWire has no loopback node" "$actual" "busy"
+saw_pw "relay without a node"
+saw_fuser "relay without a node" "fuser /dev/video2"
+clear_relays
+
+add_relay camlink "Cam Link 4K" /dev/video2
+actual=$(PROBE_KEEP_RELAYS=1 probe "$tmp/screencast.json")
+expect "a running relay with nobody capturing is idle" "$actual" "idle"
+saw_pw "idle relay without a node"
+saw_fuser "idle relay without a node" "fuser /dev/video2"
+clear_relays
+
+add_relay camlink "Cam Link 4K"
+actual=$(PROBE_KEEP_RELAYS=1 probe "$tmp/loopback.json")
+expect "a running relay uses the loopback node path when sysfs has no name" "$actual" "idle"
+saw_pw "relay without sysfs"
+saw_fuser "relay without sysfs" "fuser /dev/video2"
+clear_relays
 
 actual=$(probe "$tmp/camera-and-screencast.json")
 expect "screen sharing leaves a plugged-in webcam idle" "$actual" "idle"
@@ -381,7 +492,7 @@ saw_pw "local video nodes"
 
 start=$SECONDS
 actual=$(probe "$tmp/screencast.json" hang "" "/dev/video0")
-elapsed=$SECONDS
+elapsed=$((SECONDS - start))
 expect "a hung pw-dump falls back to the device list" "$actual" "idle"
 if (( elapsed >= 5 )); then
   fail "pw-dump is bounded by timeout" "elapsed ${elapsed}s"
@@ -394,6 +505,8 @@ printf 'fail\n' >"$tmp/pw-mode"
 : >"$log"
 actual=$(env -u CAMERA_BUSY_DEVICES -u CAMERA_BUSY_OPEN_DEVICES \
   CAMERA_BUSY_DUMP="$tmp/screencast.json" \
+  CAMERA_BUSY_RELAY_DIR="$relay_dir" \
+  CAMERA_BUSY_VIDEO_SYSFS="$sysfs_root" \
   PATH="$bin:$PATH" \
   bash "$script")
 expect "CAMERA_BUSY_DUMP replaces pw-dump" "$actual" "absent"
@@ -408,6 +521,8 @@ cp -- "$tmp/camera-idle.json" "$tmp/dump.json"
 : >"$tmp/open"
 actual=$(env -u CAMERA_BUSY_DUMP -u CAMERA_BUSY_DEVICES \
   CAMERA_BUSY_OPEN_DEVICES="/dev/video9" \
+  CAMERA_BUSY_RELAY_DIR="$relay_dir" \
+  CAMERA_BUSY_VIDEO_SYSFS="$sysfs_root" \
   PATH="$bin:$PATH" \
   bash "$script")
 expect "CAMERA_BUSY_OPEN_DEVICES does not by itself mean busy" "$actual" "idle"
