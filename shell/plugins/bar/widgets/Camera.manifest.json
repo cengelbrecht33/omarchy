@@ -17,5 +17,13 @@
     "category": "Video",
     "allowMultiple": false,
     "defaultSection": "right"
+  },
+  "omarchy": {
+    "clonePaths": [
+      {
+        "source": "camera-busy.sh",
+        "target": "camera-busy.sh"
+      }
+    ]
   }
 }

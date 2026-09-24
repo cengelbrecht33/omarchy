@@ -22,7 +22,7 @@ Nearly every widget does something on left, right, and middle click, and several
 | Weather | Forecast popup | Full weather as a notification | Middle: refresh |
 | Audio | Audio panel | Mute | Middle: panel · scroll: volume |
 | Microphone | Mute the mic | — | Middle: audio panel · scroll: input volume |
-| Camera | — | — | Stays visible while a webcam is plugged in. The icon becomes a record mark while an app has the camera open. |
+| Camera | — | — | — |
 | Network | Network panel | — | — |
 | Bluetooth | Bluetooth panel | Toggle the radio | — |
 | Display | Display panel | — | Scroll: brightness |
@@ -31,6 +31,8 @@ Nearly every widget does something on left, right, and middle click, and several
 | Agents | Agents panel | Launch your agent | Middle: next subscription |
 | Tray | Hover to reveal the drawer | Right on the chevron to manage | — |
 | Omarchy update | Run the update | — | — |
+
+The camera widget stays visible while a webcam is plugged in. The icon becomes a record mark while an app has the camera open.
 
 Not everything in that table is on your bar out of the box. The media widget (MPRIS now-playing, with a scrolling track and artist), the microphone widget, and the camera widget are built in but off by default — add them if you want them, as described below.
 
