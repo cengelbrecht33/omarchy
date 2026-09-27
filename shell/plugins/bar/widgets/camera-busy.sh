@@ -15,7 +15,9 @@
 # while its relay instance is active: that drops a node left behind after
 # unplug, and still shows the camera when the relay is running but PipeWire
 # never created a node. The device comes from the virtual video4linux name,
-# or from the loopback node's path when that name is absent.
+# or from the loopback node's path when that name is absent. A loopback with
+# no matching active relay does not count, including an OBS virtual camera
+# and a relay whose name or CARD_LABEL this probe does not match.
 #
 # When pw-dump fails, times out, or returns nothing, fall back to any
 # /dev/videoN node.
