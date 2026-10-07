@@ -60,6 +60,8 @@ chmod +x "$bin/timeout" "$bin/pw-dump" "$bin/fuser" "$bin/systemctl"
 
 relay_dir="$tmp/relays"
 sysfs_root="$tmp/sys/video4linux"
+usb_root="$tmp/usb"
+disabled_flag="$tmp/state/camera-disabled"
 
 clear_relays() {
   rm -rf "$relay_dir" "$sysfs_root"
@@ -67,6 +69,25 @@ clear_relays() {
   : >"$tmp/active-relays"
 }
 clear_relays
+
+clear_usb() {
+  rm -rf "$usb_root" "$(dirname "$disabled_flag")"
+  mkdir -p "$usb_root" "$(dirname "$disabled_flag")"
+}
+clear_usb
+
+# name looks like a sysfs interface (1-1:1.0). class is bInterfaceClass.
+add_usb_interface() {
+  local name=$1
+  local class=${2:-0e}
+
+  mkdir -p "$usb_root/$name"
+  printf '%s\n' "$class" >"$usb_root/$name/bInterfaceClass"
+}
+
+mark_cameras_off() {
+  : >"$disabled_flag"
+}
 
 # instance.conf plus, when device is set, a virtual video4linux name file.
 add_relay() {
@@ -89,6 +110,7 @@ add_relay() {
 # fallback: __unset__ leaves CAMERA_BUSY_DEVICES unset; any other value,
 # including empty, is passed through and stands in for the device glob.
 # PROBE_KEEP_RELAYS=1 keeps a relay set up before this call.
+# PROBE_KEEP_USB=1 keeps the disabled flag and USB interfaces set up before it.
 probe() {
   local fixture=$1
   local mode=${2:-ok}
@@ -97,6 +119,9 @@ probe() {
 
   if [[ ${PROBE_KEEP_RELAYS:-} != 1 ]]; then
     clear_relays
+  fi
+  if [[ ${PROBE_KEEP_USB:-} != 1 ]]; then
+    clear_usb
   fi
   cp -- "$fixture" "$tmp/dump.json"
   printf '%s\n' "$mode" >"$tmp/pw-mode"
@@ -111,6 +136,8 @@ probe() {
     env -u CAMERA_BUSY_DUMP -u CAMERA_BUSY_DEVICES -u CAMERA_BUSY_OPEN_DEVICES \
       CAMERA_BUSY_RELAY_DIR="$relay_dir" \
       CAMERA_BUSY_VIDEO_SYSFS="$sysfs_root" \
+      CAMERA_BUSY_DISABLED_FLAG="$disabled_flag" \
+      CAMERA_BUSY_USB_DEVICES="$usb_root" \
       PATH="$bin:$PATH" \
       bash "$script"
   else
@@ -118,6 +145,8 @@ probe() {
       CAMERA_BUSY_DEVICES="$fallback" \
       CAMERA_BUSY_RELAY_DIR="$relay_dir" \
       CAMERA_BUSY_VIDEO_SYSFS="$sysfs_root" \
+      CAMERA_BUSY_DISABLED_FLAG="$disabled_flag" \
+      CAMERA_BUSY_USB_DEVICES="$usb_root" \
       PATH="$bin:$PATH" \
       bash "$script"
   fi
@@ -349,6 +378,16 @@ cat >"$tmp/odd-path.json" <<'EOF'
 ]
 EOF
 
+cat >"$tmp/libcamera-idle.json" <<'EOF'
+[
+  {
+    "id": 40,
+    "type": "PipeWire:Interface:Node",
+    "info": {"props": {"media.class": "Video/Source", "device.api": "libcamera"}}
+  }
+]
+EOF
+
 echo '[]' >"$tmp/empty.json"
 printf 'not-json\n' >"$tmp/garbage.json"
 
@@ -452,6 +491,96 @@ expect "an empty pw-dump with no webcam is absent" "$actual" "absent"
 saw_pw "empty pw-dump"
 no_fuser "empty pw-dump"
 
+clear_usb
+add_usb_interface 1-1:1.0
+add_usb_interface 1-1:1.2 01
+mark_cameras_off
+actual=$(PROBE_KEEP_USB=1 probe "$tmp/empty.json")
+expect "USB cameras switched off, and still attached, are disabled" "$actual" "disabled"
+saw_pw "disabled USB cameras"
+no_fuser "disabled USB cameras"
+
+clear_usb
+add_usb_interface 1-1:1.0
+add_usb_interface 1-1:1.2 01
+mark_cameras_off
+actual=$(PROBE_KEEP_USB=1 probe "$tmp/screencast.json")
+expect "screen sharing leaves switched-off USB cameras disabled" "$actual" "disabled"
+saw_pw "screen sharing with cameras off"
+no_fuser "screen sharing with cameras off"
+
+clear_usb
+mark_cameras_off
+actual=$(PROBE_KEEP_USB=1 probe "$tmp/empty.json")
+expect "the disabled flag with no USB video interface is absent" "$actual" "absent"
+saw_pw "flag without an interface"
+no_fuser "flag without an interface"
+
+clear_usb
+add_usb_interface 1-1:1.0
+actual=$(PROBE_KEEP_USB=1 probe "$tmp/empty.json")
+expect "a USB video interface without the disabled flag is absent" "$actual" "absent"
+saw_pw "interface without the flag"
+no_fuser "interface without the flag"
+
+clear_usb
+add_usb_interface 1-1:1.2 01
+mark_cameras_off
+actual=$(PROBE_KEEP_USB=1 probe "$tmp/empty.json")
+expect "a disabled flag with only a USB audio interface is absent" "$actual" "absent"
+saw_pw "audio interface only"
+no_fuser "audio interface only"
+
+clear_usb
+add_usb_interface 1-1:1.0
+mark_cameras_off
+actual=$(PROBE_KEEP_USB=1 probe "$tmp/camera-idle.json")
+expect "an idle webcam wins over USB cameras switched off" "$actual" "idle"
+saw_pw "idle webcam over disabled"
+saw_fuser "idle webcam over disabled" "fuser /dev/video0"
+
+clear_usb
+add_usb_interface 1-1:1.0
+mark_cameras_off
+actual=$(PROBE_KEEP_USB=1 probe "$tmp/camera-linked.json")
+expect "a camera in use wins over USB cameras switched off" "$actual" "busy"
+saw_pw "busy webcam over disabled"
+saw_fuser "busy webcam over disabled" "fuser /dev/video0"
+
+clear_usb
+add_usb_interface 1-1:1.0
+mark_cameras_off
+actual=$(PROBE_KEEP_USB=1 probe "$tmp/libcamera-idle.json")
+expect "an idle libcamera source wins over USB cameras switched off" "$actual" "idle"
+saw_pw "idle libcamera over disabled"
+no_fuser "idle libcamera over disabled"
+
+clear_usb
+add_usb_interface 1-1:1.0
+mark_cameras_off
+actual=$(PROBE_KEEP_USB=1 probe "$tmp/libcamera.json")
+expect "a libcamera source in use wins over USB cameras switched off" "$actual" "busy"
+saw_pw "busy libcamera over disabled"
+no_fuser "busy libcamera over disabled"
+
+clear_usb
+add_usb_interface 1-1:1.0
+mark_cameras_off
+add_relay camlink "Cam Link 4K" /dev/video2
+actual=$(PROBE_KEEP_USB=1 PROBE_KEEP_RELAYS=1 probe "$tmp/loopback.json")
+expect "a running relay wins over USB cameras switched off" "$actual" "idle"
+saw_pw "relay over disabled"
+saw_fuser "relay over disabled" "fuser /dev/video2"
+clear_relays
+
+clear_usb
+add_usb_interface 1-1:1.0
+mark_cameras_off
+actual=$(PROBE_KEEP_USB=1 probe "$tmp/screencast.json" fail "" "")
+expect "failed pw-dump with USB cameras switched off is disabled" "$actual" "disabled"
+saw_pw "failed pw-dump cameras off"
+no_fuser "failed pw-dump cameras off"
+
 actual=$(probe "$tmp/garbage.json" ok "" "/dev/video0")
 expect "unreadable pw-dump falls back to the device list" "$actual" "idle"
 saw_pw "unreadable pw-dump"
@@ -507,6 +636,8 @@ actual=$(env -u CAMERA_BUSY_DEVICES -u CAMERA_BUSY_OPEN_DEVICES \
   CAMERA_BUSY_DUMP="$tmp/screencast.json" \
   CAMERA_BUSY_RELAY_DIR="$relay_dir" \
   CAMERA_BUSY_VIDEO_SYSFS="$sysfs_root" \
+  CAMERA_BUSY_DISABLED_FLAG="$disabled_flag" \
+  CAMERA_BUSY_USB_DEVICES="$usb_root" \
   PATH="$bin:$PATH" \
   bash "$script")
 expect "CAMERA_BUSY_DUMP replaces pw-dump" "$actual" "absent"
@@ -523,6 +654,8 @@ actual=$(env -u CAMERA_BUSY_DUMP -u CAMERA_BUSY_DEVICES \
   CAMERA_BUSY_OPEN_DEVICES="/dev/video9" \
   CAMERA_BUSY_RELAY_DIR="$relay_dir" \
   CAMERA_BUSY_VIDEO_SYSFS="$sysfs_root" \
+  CAMERA_BUSY_DISABLED_FLAG="$disabled_flag" \
+  CAMERA_BUSY_USB_DEVICES="$usb_root" \
   PATH="$bin:$PATH" \
   bash "$script")
 expect "CAMERA_BUSY_OPEN_DEVICES does not by itself mean busy" "$actual" "idle"
@@ -533,3 +666,7 @@ if grep -q 'pipewireCamera' "$qml"; then
   fail "camera widget does not treat every Video/Source as a webcam"
 fi
 pass "camera widget does not treat every Video/Source as a webcam"
+if ! grep -q 'state === "disabled"' "$qml"; then
+  fail "camera widget accepts the disabled state"
+fi
+pass "camera widget accepts the disabled state"

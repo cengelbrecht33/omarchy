@@ -1,5 +1,5 @@
 #!/bin/bash
-# Print busy, idle, or absent.
+# Print busy, idle, absent, or disabled.
 #
 # A webcam is a v4l2 or libcamera Video/Source. Screen sharing is also a
 # Video/Source, and its client is Stream/Input/Video, so those classes are
@@ -22,10 +22,18 @@
 # When pw-dump fails, times out, or returns nothing, fall back to any
 # /dev/videoN node.
 #
+# When no webcam counts, print disabled if /var/lib/omarchy/camera-disabled
+# exists and a USB video interface (bInterfaceClass 0e) is still attached.
+# Switching USB cameras off drops their /dev/videoN node and their PipeWire
+# node, and the widget has to stay so they can be turned back on. A camera
+# the switch does not cover, such as a libcamera source or a relayed
+# loopback, still reports idle or busy. Busy wins over disabled.
+#
 # CAMERA_BUSY_DUMP replaces pw-dump. CAMERA_BUSY_DEVICES replaces the
 # fallback device list. CAMERA_BUSY_RELAY_DIR and CAMERA_BUSY_VIDEO_SYSFS
 # replace the relay config directory and the virtual video4linux sysfs tree.
-# Leave them unset in normal use.
+# CAMERA_BUSY_DISABLED_FLAG and CAMERA_BUSY_USB_DEVICES replace the flag and
+# the USB sysfs tree. Leave them unset in normal use.
 
 shopt -s nullglob
 
@@ -212,10 +220,30 @@ if ((${#video_nodes[@]} > 0)) && fuser "${video_nodes[@]}" >/dev/null 2>&1; then
   device_open=1
 fi
 
+# Flag plus a USB video interface that is still there. Deauthorizing the
+# interface removes the /dev node, so this is the only presence signal left.
+usb_cameras_disabled() {
+  local flag=${CAMERA_BUSY_DISABLED_FLAG:-/var/lib/omarchy/camera-disabled}
+  local usb_root=${CAMERA_BUSY_USB_DEVICES:-/sys/bus/usb/devices}
+  local interface class
+
+  [[ -e "$flag" ]] || return 1
+  for interface in "$usb_root"/*:*; do
+    [[ -r $interface/bInterfaceClass ]] || continue
+    class=$(<"$interface/bInterfaceClass")
+    if [[ $class == "0e" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 if (( device_open == 1 || linked == 1 )); then
   echo busy
 elif (( cameras > 0 )); then
   echo idle
+elif usb_cameras_disabled; then
+  echo disabled
 else
   echo absent
 fi

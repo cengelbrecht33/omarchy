@@ -7,11 +7,14 @@ BarWidget {
   id: root
   moduleName: "omarchy.camera"
 
-  // "absent", "idle", or "busy". The probe is the only presence signal:
-  // Quickshell's Video/Source flag also matches a screen-share producer.
+  // "absent", "idle", "busy", or "disabled". The probe is the only presence
+  // signal: Quickshell's Video/Source flag also matches a screen-share producer.
+  // "disabled" is USB cameras switched off while still attached, and only when
+  // no other camera counts. Busy wins over it.
   property string cameraState: "absent"
   readonly property bool present: cameraState !== "absent"
   readonly property bool inUse: cameraState === "busy"
+  readonly property bool disabled: cameraState === "disabled"
 
   visible: present
   implicitWidth: button.implicitWidth
@@ -44,7 +47,7 @@ BarWidget {
     }
     onExited: function(code) {
       var state = String(busyOut.text || "").trim()
-      if (state === "busy" || state === "idle" || state === "absent")
+      if (state === "busy" || state === "idle" || state === "absent" || state === "disabled")
         root.cameraState = state
     }
   }
@@ -53,8 +56,8 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.inUse ? "󰻂" : "󰄀"
+    text: root.disabled ? "󰗟" : (root.inUse ? "󰻂" : "󰄀")
     active: root.inUse
-    tooltipText: root.inUse ? "Camera in use" : "Camera live"
+    tooltipText: root.disabled ? "Camera disabled" : (root.inUse ? "Camera in use" : "Camera live")
   }
 }
