@@ -19,6 +19,10 @@
 # no matching active relay does not count, including an OBS virtual camera
 # and a relay whose name or CARD_LABEL this probe does not match.
 #
+# v4l2-relayd keeps that loopback open while it runs. That writer is not an
+# app capturing, so it does not count. Any other process holding the device
+# still reports busy.
+#
 # When pw-dump fails, times out, or returns nothing, fall back to any
 # /dev/videoN node.
 #
@@ -147,6 +151,8 @@ if (( dump_ok )); then
   fi
 fi
 
+declare -A relay_device=()
+
 if (( dump_ok )); then
   relay_dir=${CAMERA_BUSY_RELAY_DIR:-/etc/v4l2-relayd.d}
   sysfs_root=${CAMERA_BUSY_VIDEO_SYSFS:-/sys/devices/virtual/video4linux}
@@ -177,6 +183,7 @@ if (( dump_ok )); then
       relay_path=${loop_path_for_card[$label]}
     fi
     [[ $relay_path =~ ^/dev/video[0-9]+$ ]] || continue
+    relay_device[$relay_path]=1
 
     already=0
     for existing in "${paths[@]}"; do
@@ -216,8 +223,42 @@ for candidate in "${paths[@]}"; do
 done
 
 device_open=0
-if ((${#video_nodes[@]} > 0)) && fuser "${video_nodes[@]}" >/dev/null 2>&1; then
+plain_nodes=()
+relay_nodes=()
+for candidate in "${video_nodes[@]}"; do
+  if [[ -n ${relay_device[$candidate]:-} ]]; then
+    relay_nodes+=("$candidate")
+  else
+    plain_nodes+=("$candidate")
+  fi
+done
+
+if ((${#plain_nodes[@]} > 0)) && fuser "${plain_nodes[@]}" >/dev/null 2>&1; then
   device_open=1
+fi
+
+# fuser -v names each opener. Its first process shares the device line when
+# the path is shorter than the 20-column name field, which /dev/videoN is.
+# The relay's own writer stays up for the whole time the virtual camera
+# exists, so only a different command counts.
+if ((${#relay_nodes[@]} > 0)); then
+  fuser_report=$(fuser -v "${relay_nodes[@]}" 2>&1 || true)
+  current=""
+  while IFS= read -r line; do
+    if [[ $line =~ ^(/dev/video[0-9]+):[[:space:]]*(.*)$ ]]; then
+      current=${BASH_REMATCH[1]}
+      line=${BASH_REMATCH[2]}
+      [[ -n $line ]] || continue
+    fi
+    [[ -n $current ]] || continue
+    [[ $line =~ ^[[:space:]]*[^[:space:]]+[[:space:]]+[0-9]+[[:space:]]+[A-Za-z.]+[[:space:]]+(.*)$ ]] || continue
+    opener=${BASH_REMATCH[1]}
+    opener=${opener%"${opener##*[![:space:]]}"}
+    [[ $opener == v4l2-relayd ]] && continue
+    [[ -n $opener ]] || continue
+    device_open=1
+    break
+  done <<<"$fuser_report"
 fi
 
 # Flag plus a USB video interface that is still there. Deauthorizing the

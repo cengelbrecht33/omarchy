@@ -32,7 +32,7 @@ Nearly every widget does something on left, right, and middle click, and several
 | Tray | Hover to reveal the drawer | Right on the chevron to manage | — |
 | Omarchy update | Run the update | — | — |
 
-The camera widget stays visible while a webcam is plugged in, and while USB cameras are switched off but still attached. The icon is a camera while idle, a record mark while an app has the camera open, and a camera-off mark while those USB cameras are switched off. A camera the switch does not cover, such as a built-in MIPI camera, still shows as idle or in use.
+The camera widget stays visible while a webcam is plugged in. The icon becomes a record mark while an app has the camera open.
 
 Not everything in that table is on your bar out of the box. The media widget (MPRIS now-playing, with a scrolling track and artist), the microphone widget, and the camera widget are built in but off by default — add them if you want them, as described below.
 

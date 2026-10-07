@@ -37,14 +37,57 @@ fi
 cat "$tmp/dump.json"
 EOF
 
+# A line in the open file is "/dev/videoN" (some other process) or
+# "/dev/videoN=command". Verbose mode prints the fuser -v process table.
 cat >"$bin/fuser" <<EOF
 #!/bin/bash
 printf 'fuser %s\n' "\$*" >>"$log"
+verbose=0
+nodes=()
 for arg in "\$@"; do
-  if grep -qxF -- "\$arg" "$tmp/open"; then
-    exit 0
+  if [[ \$arg == -v ]]; then
+    verbose=1
+    continue
   fi
+  [[ \$arg == -* ]] && continue
+  nodes+=("\$arg")
 done
+found=0
+holders=()
+while IFS= read -r line || [[ -n \$line ]]; do
+  [[ -n \$line ]] || continue
+  device=\${line%%=*}
+  if [[ \$line == *=* ]]; then
+    opener=\${line#*=}
+  else
+    opener=app
+  fi
+  for arg in "\${nodes[@]}"; do
+    [[ \$arg == "\$device" ]] || continue
+    found=1
+    holders+=("\$device \$opener")
+  done
+done <"$tmp/open"
+if (( verbose && found )); then
+  printf '%s\n' '                     USER        PID ACCESS COMMAND'
+  pid=1000
+  current=""
+  for holder in "\${holders[@]}"; do
+    device=\${holder%% *}
+    opener=\${holder#* }
+    if [[ \$device != "\$current" ]]; then
+      # fuser keeps the first process on the device line for /dev/videoN.
+      printf '%s:         carl      %s F.... %s\n' "\$device" "\$pid" "\$opener"
+      current=\$device
+    else
+      printf '                     carl      %s F.... %s\n' "\$pid" "\$opener"
+    fi
+    pid=\$((pid + 1))
+  done
+fi
+if (( found )); then
+  exit 0
+fi
 exit 1
 EOF
 cat >"$bin/systemctl" <<EOF
@@ -107,6 +150,7 @@ add_relay() {
 
 # fixture: pw-dump body. mode: ok, fail, or hang.
 # open_devices: comma-separated nodes the fuser stub reports open.
+# "/dev/videoN=command" names the opener. A bare path is some other process.
 # fallback: __unset__ leaves CAMERA_BUSY_DEVICES unset; any other value,
 # including empty, is passed through and stands in for the device glob.
 # PROBE_KEEP_RELAYS=1 keeps a relay set up before this call.
@@ -407,38 +451,45 @@ saw_pw "unplugged loopback"
 no_fuser "unplugged loopback"
 
 add_relay camlink "Cam Link 4K" /dev/video2
-actual=$(PROBE_KEEP_RELAYS=1 probe "$tmp/loopback.json")
+actual=$(PROBE_KEEP_RELAYS=1 probe "$tmp/loopback.json" ok "/dev/video2=v4l2-relayd")
 expect "a loopback source counts while its relay is running" "$actual" "idle"
 saw_pw "relayed loopback"
-saw_fuser "relayed loopback" "fuser /dev/video2"
+saw_fuser "relayed loopback" "fuser -v /dev/video2"
 clear_relays
 
 add_relay camlink "Cam Link 4K" /dev/video2
-actual=$(PROBE_KEEP_RELAYS=1 probe "$tmp/loopback-linked.json")
+actual=$(PROBE_KEEP_RELAYS=1 probe "$tmp/loopback.json" ok "/dev/video2=v4l2-relayd,/dev/video2=firefox")
+expect "an app holding a relayed loopback is busy" "$actual" "busy"
+saw_pw "app on relayed loopback"
+saw_fuser "app on relayed loopback" "fuser -v /dev/video2"
+clear_relays
+
+add_relay camlink "Cam Link 4K" /dev/video2
+actual=$(PROBE_KEEP_RELAYS=1 probe "$tmp/loopback-linked.json" ok "/dev/video2=v4l2-relayd")
 expect "a link from a relayed loopback is busy" "$actual" "busy"
 saw_pw "linked relayed loopback"
-saw_fuser "linked relayed loopback" "fuser /dev/video2"
+saw_fuser "linked relayed loopback" "fuser -v /dev/video2"
 clear_relays
 
 add_relay camlink "Cam Link 4K" /dev/video2
 actual=$(PROBE_KEEP_RELAYS=1 probe "$tmp/screencast.json" ok "/dev/video2")
-expect "a running relay counts when PipeWire has no loopback node" "$actual" "busy"
+expect "another process holding the relay device is busy without a PipeWire node" "$actual" "busy"
 saw_pw "relay without a node"
-saw_fuser "relay without a node" "fuser /dev/video2"
+saw_fuser "relay without a node" "fuser -v /dev/video2"
 clear_relays
 
 add_relay camlink "Cam Link 4K" /dev/video2
-actual=$(PROBE_KEEP_RELAYS=1 probe "$tmp/screencast.json")
+actual=$(PROBE_KEEP_RELAYS=1 probe "$tmp/screencast.json" ok "/dev/video2=v4l2-relayd")
 expect "a running relay with nobody capturing is idle" "$actual" "idle"
 saw_pw "idle relay without a node"
-saw_fuser "idle relay without a node" "fuser /dev/video2"
+saw_fuser "idle relay without a node" "fuser -v /dev/video2"
 clear_relays
 
 add_relay camlink "Cam Link 4K"
-actual=$(PROBE_KEEP_RELAYS=1 probe "$tmp/loopback.json")
+actual=$(PROBE_KEEP_RELAYS=1 probe "$tmp/loopback.json" ok "/dev/video2=v4l2-relayd")
 expect "a running relay uses the loopback node path when sysfs has no name" "$actual" "idle"
 saw_pw "relay without sysfs"
-saw_fuser "relay without sysfs" "fuser /dev/video2"
+saw_fuser "relay without sysfs" "fuser -v /dev/video2"
 clear_relays
 
 actual=$(probe "$tmp/camera-and-screencast.json")
@@ -567,10 +618,10 @@ clear_usb
 add_usb_interface 1-1:1.0
 mark_cameras_off
 add_relay camlink "Cam Link 4K" /dev/video2
-actual=$(PROBE_KEEP_USB=1 PROBE_KEEP_RELAYS=1 probe "$tmp/loopback.json")
+actual=$(PROBE_KEEP_USB=1 PROBE_KEEP_RELAYS=1 probe "$tmp/loopback.json" ok "/dev/video2=v4l2-relayd")
 expect "a running relay wins over USB cameras switched off" "$actual" "idle"
 saw_pw "relay over disabled"
-saw_fuser "relay over disabled" "fuser /dev/video2"
+saw_fuser "relay over disabled" "fuser -v /dev/video2"
 clear_relays
 
 clear_usb
